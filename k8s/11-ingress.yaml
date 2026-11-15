@@ -1,31 +1,56 @@
-# Internet-facing AWS ALB spanning all 3 AZs, created by the AWS Load Balancer
-# Controller that kops installs (spec.awsLoadBalancerController.enabled=true).
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+# Kubernetes Ingress resource for exposing the vprofile application through AWS.
+# The AWS Load Balancer Controller watches this resource and provisions/configures
+# an Application Load Balancer (ALB). The ALB uses the subnets discovered by the
+# controller; ensure those subnets cover the Availability Zones you want to use.
+apiVersion: networking.k8s.io/v1 # Stable Kubernetes API version for Ingress resources.
+kind: Ingress # Routes external HTTP(S) traffic to an in-cluster Service.
 metadata:
-  name: vprofile
-  namespace: vprofile
-  annotations:
+  name: vprofile # Name of this Ingress resource within its namespace.
+  namespace: vprofile # Namespace containing this Ingress and the backend Service.
+  annotations: # AWS Load Balancer Controller settings for the ALB and its target group.
+    # Create an ALB reachable from the internet (rather than an internal-only ALB).
     alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip          # route straight to pod IPs
+
+    # Register pod IPs directly as ALB targets. This requires compatible networking
+    # (for example, routable pod IPs) and avoids routing through NodePort services.
+    alb.ingress.kubernetes.io/target-type: ip
+
+    # Use this endpoint when checking whether each application target is healthy.
     alb.ingress.kubernetes.io/healthcheck-path: /health
+
+    # Treat only HTTP 200 responses from the health-check endpoint as healthy.
     alb.ingress.kubernetes.io/success-codes: "200"
-    # Logins live in Tomcat memory -> sticky sessions are REQUIRED
+
+    # The application stores login state in Tomcat memory, so a user's requests
+    # should continue reaching the same target. ALB cookie stickiness lasts one
+    # hour; deregistration delay gives a target up to 15 seconds to drain requests.
     alb.ingress.kubernetes.io/target-group-attributes: >-
       stickiness.enabled=true,stickiness.type=lb_cookie,stickiness.lb_cookie.duration_seconds=3600,deregistration_delay.timeout_seconds=15
+
+    # Configure the ALB listener to accept plain HTTP traffic on port 80.
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
-    # --- HTTPS: uncomment after requesting an ACM certificate ---
+
+    # HTTPS setup: request/validate an ACM certificate, then enable the HTTPS
+    # listener and provide its certificate ARN. Uncomment the HTTPS listen-ports
+    # annotation below instead of the HTTP-only setting above. Enabling the
+    # redirect sends HTTP requests to HTTPS on port 443.
     # alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     # alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:REGION:ACCOUNT:certificate/ID
     # alb.ingress.kubernetes.io/ssl-redirect: "443"
 spec:
+  # Select the AWS Load Balancer Controller's IngressClass.
   ingressClassName: alb
   rules:
+    # This rule has no host condition, so it matches requests for any hostname.
     - http:
         paths:
+          # Send requests whose URL path begins with / to the application Service.
           - path: /
+            # Prefix matching includes / and all paths below it.
             pathType: Prefix
             backend:
               service:
+                # Kubernetes Service that forwards the traffic to application pods.
                 name: vprofile-app
+                # Route to the Service port named http (not directly to a pod port).
                 port: {name: http}
